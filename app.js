@@ -2,36 +2,51 @@ import express from 'express';
 import multer from 'multer';
 import csv from 'fast-csv';
 import fs from 'fs';
+import cron from 'node-cron';
+import connection from './connections'; 
+
+cron.schedule("1 1 * * *", function() {
+    console.log("running a task every minute");
+});
+
+connection.connect(function(err) {
+    if (err) throw err;
+    console.log('You are now connected...');
+});  
 
 const app = express();
-
 
 const upload = multer({ dest: '/upload' });
 
 app.get('/', (req, res) => {
-    res.status(200).send({
-        success: 'true',
-        message: 'Somethign is coming finally'
-    })
+    connection.query('SELECT * FROM data', (err, results) => {
+        if (err) throw err;
+        res.status(200).send(results);
+    });
 });
 
 app.post('/', upload.single('file'), (req, res) => {
     const fileRows = [];
-  
-    csv.fromPath(req.file.path).on("data", function (data) {
+    if ('text/csv' !== req.file.mimetype) 
+        return res.status(400).json({ error: "File type incompatible." });
+
+    csv.fromPath(req.file.path).on("data", (data) => {
         fileRows.push(data);
     }).on("end", function () {
         fs.unlinkSync(req.file.path);
-        const validationError = validateCsvData(fileRows);
+        const dataRows = fileRows.slice(1, fileRows.length);
+        const validationError = validateCsvData(dataRows);
         if (validationError) {
-            return res.status(403).json({ error: validationError });
+            return res.status(400).json({ error: validationError });
         }
-        res.status(201).send();
+        connection.query('INSERT INTO data (id, name, date, steps, calories) values ?', [dataRows], (err) => {
+            if (err) throw err;
+        });
+        res.status(201).send({success: 'Successfully added records.'});
     });
 });
 
-let validateCsvData = (rows) => {
-    const dataRows = rows.slice(1, rows.length);
+const validateCsvData = (dataRows) => {
     for (let i = 0; i < dataRows.length; i++) {
         const rowError = validateCsvRow(dataRows[i]);
         if (rowError) {
@@ -41,7 +56,7 @@ let validateCsvData = (rows) => {
     return;
 }
 
-let validateCsvRow = (row) => {
+const validateCsvRow = (row) => {
     if (!Number.isInteger(Number(row[0]))) {
         return "invalid id";
     } else if (!row[1]) {
